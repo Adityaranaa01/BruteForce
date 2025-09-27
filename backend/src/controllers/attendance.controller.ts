@@ -1,204 +1,241 @@
 import { Request, Response } from "express";
 import { supabase } from "../config";
-import { AttendanceEvent } from "../models/attendance.model";
 import { asyncHandler, AppError } from "../middleware/error.middleware";
-import { AuthenticatedRequest } from "../middleware/auth.middleware";
+import {
+  Attendance,
+  CreateAttendanceRequest,
+  AttendanceStats,
+  BulkAttendanceRequest,
+} from "../models/attendance.model";
 
-export const receiveAttendanceEvent = asyncHandler(
-  async (req: AuthenticatedRequest, res: Response) => {
-    const currentUser = req.user!;
-    const attendanceEvent: AttendanceEvent = req.body;
+export const getAttendance = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { usn, course_id, date, page = 1, limit = 10 } = req.query;
 
-    // Only admins and teachers can receive attendance events
-    if (!["admin", "teacher"].includes(currentUser.role)) {
-      throw new AppError("Access denied", 403);
+    let query = supabase
+      .from("attendance")
+      .select("*", { count: "exact" })
+      .order("date", { ascending: false });
+
+    // Apply filters
+    if (usn) {
+      query = query.eq("usn", usn);
+    }
+    if (course_id) {
+      query = query.eq("course_id", course_id);
+    }
+    if (date) {
+      query = query.eq("date", date);
     }
 
+    // Apply pagination
+    const from = (Number(page) - 1) * Number(limit);
+    const to = from + Number(limit) - 1;
+    query = query.range(from, to);
+
+    const { data: attendance, error, count } = await query;
+
+    if (error) {
+      throw new AppError("Failed to fetch attendance", 500);
+    }
+
+    res.json({
+      success: true,
+      data: attendance,
+      pagination: {
+        page: Number(page),
+        limit: Number(limit),
+        total: count || 0,
+        pages: Math.ceil((count || 0) / Number(limit)),
+      },
+    });
+  }
+);
+
+export const createAttendance = asyncHandler(
+  async (req: Request, res: Response) => {
+    const attendanceData: CreateAttendanceRequest = req.body;
+
+    // Validate required fields
     if (
-      !attendanceEvent.class_id ||
-      !attendanceEvent.timestamp ||
-      !attendanceEvent.students
+      !attendanceData.usn ||
+      !attendanceData.course_id ||
+      !attendanceData.status
     ) {
+      throw new AppError("USN, course ID, and status are required", 400);
+    }
+
+    const { data: attendance, error } = await supabase
+      .from("attendance")
+      .insert(attendanceData)
+      .select()
+      .single();
+
+    if (error) {
+      throw new AppError("Failed to create attendance record", 500);
+    }
+
+    res.status(201).json({
+      success: true,
+      data: attendance,
+    });
+  }
+);
+
+export const createBulkAttendance = asyncHandler(
+  async (req: Request, res: Response) => {
+    const bulkData: BulkAttendanceRequest = req.body;
+
+    // Validate required fields
+    if (!bulkData.course_id || !bulkData.date || !bulkData.students?.length) {
       throw new AppError(
-        "Class ID, timestamp, and students data are required",
+        "Course ID, date, and students list are required",
         400
       );
     }
 
-    try {
-      // Store attendance event
-      const { data: event, error: eventError } = await supabase
-        .from("attendance_events")
-        .insert({
-          class_id: attendanceEvent.class_id,
-          timestamp: attendanceEvent.timestamp,
-          students: attendanceEvent.students,
-          recorded_by: currentUser.id,
-        })
-        .select()
-        .single();
+    // Prepare attendance records
+    const attendanceRecords = bulkData.students.map((student) => ({
+      usn: student.usn,
+      course_id: bulkData.course_id,
+      date: bulkData.date,
+      status: student.status,
+    }));
 
-      if (eventError) {
-        throw new AppError("Failed to store attendance event", 500);
-      }
+    const { data: attendance, error } = await supabase
+      .from("attendance")
+      .insert(attendanceRecords)
+      .select();
 
-      // Update student attendance rates
-      const studentIds = attendanceEvent.students.map((s) => s.user_id);
-      const { data: students, error: studentsError } = await supabase
-        .from("users")
-        .select("id, attendance_rate")
-        .in("id", studentIds);
-
-      if (studentsError) {
-        throw new AppError("Failed to fetch student data", 500);
-      }
-
-      // Calculate updated attendance rates
-      const updates = await Promise.all(
-        students?.map(async (student) => {
-          // Get all attendance events for this student
-          const { data: allEvents, error: eventsError } = await supabase
-            .from("attendance_events")
-            .select("students")
-            .contains("students", [{ user_id: student.id }]);
-
-          if (eventsError) {
-            return null;
-          }
-
-          // Calculate attendance rate
-          let presentCount = 0;
-          let totalCount = 0;
-
-          allEvents?.forEach((event) => {
-            const studentRecord = event.students.find(
-              (s: any) => s.user_id === student.id
-            );
-            if (studentRecord) {
-              totalCount++;
-              if (studentRecord.status === "present") {
-                presentCount++;
-              }
-            }
-          });
-
-          const attendanceRate =
-            totalCount > 0 ? (presentCount / totalCount) * 100 : 0;
-
-          // Update user attendance rate
-          const { error: updateError } = await supabase
-            .from("users")
-            .update({ attendance_rate: attendanceRate })
-            .eq("id", student.id);
-
-          return updateError
-            ? null
-            : { id: student.id, attendance_rate: attendanceRate };
-        }) || []
-      );
-
-      // Filter out failed updates
-      const successfulUpdates = updates.filter((update) => update !== null);
-
-      res.json({
-        status: "success",
-        data: {
-          event,
-          updated_students: successfulUpdates,
-        },
-      });
-    } catch (error) {
-      throw new AppError("Failed to process attendance event", 500);
+    if (error) {
+      throw new AppError("Failed to create bulk attendance records", 500);
     }
+
+    res.status(201).json({
+      success: true,
+      data: attendance,
+      message: `${attendance.length} attendance records created`,
+    });
   }
 );
 
 export const getAttendanceStats = asyncHandler(
-  async (req: AuthenticatedRequest, res: Response) => {
-    const { student_id, class_id, date_from, date_to } = req.query;
-    const currentUser = req.user!;
+  async (req: Request, res: Response) => {
+    const { usn, course_id } = req.query;
 
-    let query = supabase
-      .from("attendance_events")
-      .select("*")
-      .order("timestamp", { ascending: false });
-
-    // Apply filters
-    if (student_id) {
-      query = query.contains("students", [{ user_id: student_id }]);
-    }
-    if (class_id) {
-      query = query.eq("class_id", class_id);
-    }
-    if (date_from) {
-      query = query.gte("timestamp", date_from);
-    }
-    if (date_to) {
-      query = query.lte("timestamp", date_to);
+    if (!usn && !course_id) {
+      throw new AppError("Either USN or course_id is required", 400);
     }
 
-    // Students can only see their own attendance
-    if (currentUser.role === "student") {
-      query = query.contains("students", [{ user_id: currentUser.id }]);
+    let query = supabase.from("attendance").select("usn, course_id, status");
+
+    if (usn) {
+      query = query.eq("usn", usn);
+    }
+    if (course_id) {
+      query = query.eq("course_id", course_id);
     }
 
-    const { data: events, error } = await query;
+    const { data: attendance, error } = await query;
 
     if (error) {
-      throw new AppError("Failed to fetch attendance data", 500);
+      throw new AppError("Failed to fetch attendance statistics", 500);
     }
 
     // Calculate statistics
-    const stats = new Map<string, any>();
+    const stats: { [key: string]: AttendanceStats } = {};
 
-    events?.forEach((event) => {
-      event.students.forEach((student: any) => {
-        if (!stats.has(student.user_id)) {
-          stats.set(student.user_id, {
-            user_id: student.user_id,
-            total_classes: 0,
-            present_count: 0,
-            absent_count: 0,
-            late_count: 0,
-            excused_count: 0,
-            attendance_rate: 0,
-          });
-        }
+    attendance.forEach((record) => {
+      const key = `${record.usn}-${record.course_id}`;
 
-        const userStats = stats.get(student.user_id);
-        userStats.total_classes++;
+      if (!stats[key]) {
+        stats[key] = {
+          usn: record.usn,
+          course_id: record.course_id,
+          total_classes: 0,
+          present: 0,
+          absent: 0,
+          late: 0,
+          attendance_percentage: 0,
+        };
+      }
 
-        switch (student.status) {
-          case "present":
-            userStats.present_count++;
-            break;
-          case "absent":
-            userStats.absent_count++;
-            break;
-          case "late":
-            userStats.late_count++;
-            break;
-          case "excused":
-            userStats.excused_count++;
-            break;
-        }
-      });
+      stats[key].total_classes++;
+
+      switch (record.status) {
+        case "Present":
+          stats[key].present++;
+          break;
+        case "Absent":
+          stats[key].absent++;
+          break;
+        case "Late":
+          stats[key].late++;
+          break;
+      }
     });
 
-    // Calculate attendance rates
-    stats.forEach((userStats) => {
-      userStats.attendance_rate =
-        userStats.total_classes > 0
-          ? (userStats.present_count / userStats.total_classes) * 100
+    // Calculate percentages
+    Object.values(stats).forEach((stat) => {
+      stat.attendance_percentage =
+        stat.total_classes > 0
+          ? Math.round(((stat.present + stat.late) / stat.total_classes) * 100)
           : 0;
     });
 
     res.json({
-      status: "success",
-      data: {
-        stats: Array.from(stats.values()),
-        events: events || [],
-      },
+      success: true,
+      data: Object.values(stats),
+    });
+  }
+);
+
+export const updateAttendance = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    if (!status || !["Present", "Absent", "Late"].includes(status)) {
+      throw new AppError(
+        "Valid status (Present, Absent, Late) is required",
+        400
+      );
+    }
+
+    const { data: attendance, error } = await supabase
+      .from("attendance")
+      .update({ status })
+      .eq("attendance_id", id)
+      .select()
+      .single();
+
+    if (error || !attendance) {
+      throw new AppError("Attendance record not found or update failed", 404);
+    }
+
+    res.json({
+      success: true,
+      data: attendance,
+    });
+  }
+);
+
+export const deleteAttendance = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from("attendance")
+      .delete()
+      .eq("attendance_id", id);
+
+    if (error) {
+      throw new AppError("Failed to delete attendance record", 500);
+    }
+
+    res.json({
+      success: true,
+      message: "Attendance record deleted successfully",
     });
   }
 );

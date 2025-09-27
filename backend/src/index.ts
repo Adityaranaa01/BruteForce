@@ -7,13 +7,11 @@ import { SocketService } from "./services/socket.service";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware";
 
 // Import routes
-import authRoutes from "./routes/auth.routes";
-import usersRoutes from "./routes/users.routes";
-import notificationsRoutes from "./routes/notifications.routes";
-import aiRoutes from "./routes/ai.routes";
-import scheduleRoutes from "./routes/schedule.routes";
-import predictiveRoutes from "./routes/predictive.routes";
+import studentRoutes from "./routes/student.routes";
+import teacherRoutes from "./routes/teacher.routes";
+import courseRoutes from "./routes/course.routes";
 import attendanceRoutes from "./routes/attendance.routes";
+import timetableRoutes from "./routes/timetable.routes";
 
 const app = express();
 const server = createServer(app);
@@ -45,75 +43,11 @@ app.get("/health", (req, res) => {
 });
 
 // API routes
-app.use("/api/auth", authRoutes);
-app.use("/api/users", usersRoutes);
-app.use("/api/notifications", notificationsRoutes);
-app.use("/api/ai", aiRoutes);
-app.use("/api/schedule", scheduleRoutes);
-app.use("/api/predictive", predictiveRoutes);
+app.use("/api/students", studentRoutes);
+app.use("/api/teachers", teacherRoutes);
+app.use("/api/courses", courseRoutes);
 app.use("/api/attendance", attendanceRoutes);
-
-// Recommendations route (simple implementation)
-app.get("/api/recommendations", async (req, res) => {
-  try {
-    const { userId } = req.query;
-    if (!userId) {
-      return res.status(400).json({
-        status: "error",
-        message: "User ID is required",
-      });
-    }
-
-    const { RecommendationService } = await import(
-      "@/services/recommendation.service"
-    );
-    const recommendations = await RecommendationService.generateRecommendations(
-      userId as string
-    );
-
-    res.json({
-      status: "success",
-      data: {
-        recommendations,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "error",
-      message: "Failed to fetch recommendations",
-    });
-  }
-});
-
-// Recommendations feedback route
-app.post("/api/recommendations/:id/feedback", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { useful } = req.body;
-
-    if (typeof useful !== "boolean") {
-      return res.status(400).json({
-        status: "error",
-        message: "Useful field must be a boolean",
-      });
-    }
-
-    const { RecommendationService } = await import(
-      "@/services/recommendation.service"
-    );
-    await RecommendationService.recordFeedback(id, useful);
-
-    res.json({
-      status: "success",
-      message: "Feedback recorded successfully",
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: "error",
-      message: "Failed to record feedback",
-    });
-  }
-});
+app.use("/api/timetable", timetableRoutes);
 
 // 404 handler
 app.use(notFoundHandler);

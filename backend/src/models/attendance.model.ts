@@ -1,21 +1,33 @@
-export interface AttendanceEvent {
-  class_id: string;
-  timestamp: string;
-  students: AttendanceRecord[];
+export interface Attendance {
+  attendance_id: number;
+  usn: string;
+  course_id: number;
+  date: string; // ISO date string
+  status: "Present" | "Absent" | "Late";
 }
 
-export interface AttendanceRecord {
-  user_id: string;
-  status: "present" | "absent" | "late" | "excused";
+export interface CreateAttendanceRequest {
+  usn: string;
+  course_id: number;
+  date?: string; // Optional, defaults to current date
+  status: "Present" | "Absent" | "Late";
 }
 
 export interface AttendanceStats {
-  user_id: string;
+  usn: string;
+  course_id: number;
   total_classes: number;
-  present_count: number;
-  absent_count: number;
-  late_count: number;
-  excused_count: number;
-  attendance_rate: number;
-  last_updated: string;
+  present: number;
+  absent: number;
+  late: number;
+  attendance_percentage: number;
+}
+
+export interface BulkAttendanceRequest {
+  course_id: number;
+  date: string;
+  students: {
+    usn: string;
+    status: "Present" | "Absent" | "Late";
+  }[];
 }
